@@ -1,0 +1,281 @@
+Bad Gophers: unexpected hurdles programming in Go
+Hey, can't be harder than C, right?
+23 Oct 2018
+Tags: containers,golang,goroutines,programming
+
+Francesco Romani
+Senior Software Engineer, Red Hat
+fromani {gmail,redhat}
+http://github.com/{mojaves,fromanirh}
+
+* whoami
+- sweng @ Red Hat (but opinions and mistakes are my own!)
+- works daily(-ish): libvirt, kvm, python, golang, kubernetes
+- interested in: more golang, containers, kubernetes; lisp
+- happy linux user (red hat linux, debian, ubuntu, fedora)
+
+* Talk outline
+
+- part 1: a journey in the container world ...
+
+- part 2: ... leading to unexpected hurdles ...
+
+- part 3: ... and culminating in some clever solutions
+
+.link https://github.com/mojaves/ slides and more: github.com/mojaves
+
+* Containers, containers...
+
+.image https://upload.wikimedia.org/wikipedia/commons/7/72/2017-08-28_HS-Reise_Container_an_Deck_der_HEINRICH_SCHEPERS_%282588%29.jpg _ 600
+.caption Container an Deck der HEINRICH SCHEPERS by Eduard47, CC BY-SA 4.0, from Wikimedia Commons
+
+* Dramatis Personae
+
+A *container*:
+- runs on Linux
+- is a Linux process (like bash, firefox, thunderbird...) but
+- augmented with a set of the features of the linux kernel
+- to (re)create a controlled process
+- to run a well-known image
+
+TODO: immagine container
+
+* Container Engines
+
+Any tool, or set of tools which can run _container_ _image_
+(Synonym: container runtime)
+
+Popular engines:
+- docker
+- rkt
+- cri-o
+
+And what about *Kubernetes*?
+- management platform
+- requires/runs on top a container runtime (docker, cri-o)
+
+* meet runC (1/2)
+
+.link https://blog.docker.com/2015/06/runc/ runc spawned from the docker codebase around 2015
+runC is the de facto standard to run containers
+runC cli interface treated as ABI
+all the major management engines (possibly _all_) under the hood use runC
+
+- docker itself
+- cri-o
+- containerd
+
+* meet runC (2/2) - TODO: redo image
+
+.image https://containerd.io/img/chart-a.png _ 720
+.caption the containerd architecture, https://containerd.io/
+
+* how runC works (aka the heavy lifting)
+
+to run a container, you need to setup some key management/containement features of the Linux kernel
+
+- cgroups (possibly using systemd)
+- SELinux (set up policy)
+- seccomp (ditto)
+- capabilities (drop privileges)
+- ...
+- *namespaces*
+
+And therein, as the Bard would tell us, lies the rub.
+
+* hurdles, when the less expected
+
+.image https://upload.wikimedia.org/wikipedia/commons/a/a5/Hurdle_on_athletic_track.jpg _ 600
+.caption Hurdle on athletic track by Santeri Viinamäki, CC BY-SA 4.0, from Wikimedia Commons
+
+* setns
+
+Each container runs in its own namespace(s)
+Any container management tool need to move processes into another namespace. Or just enter different namespaces.
+
+It boils down to changing namespaces. We can do that invoking a *sycall*
+
+  
+  setns(2): make the calling process join existing namespace(s)
+  
+
+* it seems easy
+
+  func runInsideNS() {
+    runtime.LockOSThread()
+    defer runtime.UnlockOSThread()
+
+    // we start in hostNs
+    netns.Set(containerNs)  // we want to do work here
+    defer netns.Set(hostNs) // we need to return here once done
+    doStuff()
+  }
+
+.link https://groups.google.com/forum/#!topic/golang-nuts/ss1gEOcehjk/discussion turns out it is not.
+.link https://www.weave.works/blog/linux-namespaces-and-go-don-t-mix (as other people found out)
+
+* what's going on? (1/2)
+
+TODO: do sequence diagram
+
+* what's going on? (2/2)
+
+- goroutines are multiplexed on OS threads
+- when a goroutine does a blocking syscall, the golang runtime might create a new OS thread before entering or exiting the syscall
+  TODO find code ref
+- the new OS thread 
+.link https://github.com/golang/go/blob/release-branch.go1.11/src/runtime/os_linux.go#L132 will have the same namespace as parent
+- the goroutine may end up running in a different namespace than expected
+- ...and we can't do anything about that :(
+
+* but what about LockOSThread
+
+  func runInsideNS() {
+    runtime.LockOSThread()
+    defer runtime.UnlockOSThread()
+    netns.Set(containerNs)
+    defer netns.Set(hostNs)
+    doStuff()
+  }
+
+
+1. `runInside)NS` will indeed run always on the same goroutine
+2. `runInsideNS` restores correctly the namespace
+3. *however*, while `runInsideNS` runs, the go scheduler _may_ _create_ _a_ _new_ _OS_ _Thread_!
+4. and that thread _will_ _inherit_ _the_ _NS_ _on_ _which_ `runInsideNS` _currently_ _runs_!
+
+wrap up: future goroutine may run in a random namespace. *At* *random* *times!*
+
+
+* stumbling on the scheduler
+
+The existing behaviour is acknowledged in the
+.link https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit#heading=h.3ejixocv765a scheduler design document:
+
+Syscalls/M[OS Thread] *Parking* and *Unparking*
+  
+  When an M [OS thread] creates a new G[oroutine], it must ensure that
+  there is another M [OS thread] to execute the G[oroutine]
+  (if not all M[OS Threads]’s are already busy).
+  Similarly, when an M [OS thread] enters syscall, it must ensure that
+  there is another M[OS Thread] to execute Go code.
+
+* a known issue
+
+TODO: add links
+
+* it gets darker
+
+maybe obvious for anyone but worth remembering:
+
+(almost) every go program is multithreaded - it's just how the runtime is implemented!
+
+it is pretty hard to fork a multithreaded program safely
+
+.link http://www.evanjones.ca/fork-is-dangerous.html not just in golang btw
+
+.link https://golang.org/pkg/syscall/#ForkExec this is why there isn't fork without exec in the standard library
+
+.link https://github.com/golang/go/issues/227 so you may need to rethink how you daemonize your go program
+
+maybe just use systemd? :)
+
+* Finding solution(s)
+
+.image https://upload.wikimedia.org/wikipedia/commons/c/cc/Spork_Plus.jpg _ 800
+.caption plastic spork (plus) By CarbonNYC, CC BY 2.0, via Wikimedia Commons
+
+* a step back
+
+We discovered `runc` is the core component of every major (possibly all) container runtime
+
+.link https://github.com/opencontainers/runc/tree/master/libcontainer In turn libcontainer is the core component of runc
+
+libcontainer is pretty tied to runc
+This also is a project derived from the Docker sources (~2015)
+
+So, let's look inside libcontainer
+
+* jumping through hoops
+
+.link https://github.com/opencontainers/runc/blob/master/libcontainer/README.md From the README of libcontainer:
+  
+  Using libcontainer
+
+  Because containers are spawned in a two step process you will need a binary
+  that will be executed as the init process for the container.
+  In libcontainer, we use the current binary (/proc/self/exe) to be executed
+  as the init process[...]
+  
+
+We may found a good reason why everyone is (re)using runc :)
+
+* jumping through MORE hoops, in fire
+
+How does libcontainer solve the namespace issue?
+.link https://github.com/opencontainers/runc/tree/master/libcontainer/nsenter enter the nsenter package
+
+Implemented in plain old C :)
+(except the tests)
+
+.link https://github.com/opencontainers/runc/blob/master/libcontainer/nsenter/README.md Excerpt from the README:
+  
+  The nsenter package registers a special init constructor that is called before the Go
+  runtime has a chance to boot.
+  
+
+Worth a closer look!
+
+* The nsenter flow, aka our solution
+
+The key trick is
+- hook up at the package import time, before goroutines get to run
+- use a C helper to do all the real namespace switching dance
+- The C helper has to fork() twice to enter the PID namespace correctly
+- The C helper needs to interact with the calling parent process, do its work and then let the Go runtime takeover
+- The C helper receives its configuration settings (e.g. namespaces to join!) through netlink-encoded data sent
+  via a pipe
+- The C helper sends back the PID of the new process using the same pipe, encoded as JSON
+
+* Seems easy, right?
+
+Highlights
+The C helper takes care of proper synchronization among temporary processes
+Synchronization is a multi-stage process (you need to set up stuff partially in child and partially in parent -e.g. maps)
+State machine to run code in the proper unix process
+
+Let's have a look to the flow - from 10k meters, only the *major* steps
+
+* nsenter from 10k meters 1/4
+
+.image images/nsenter_stage_a.jpg _ 800
+
+Do nothing if not asked to (reduce side effects as much as possible)
+
+* nsenter from 10k meters 2/4
+
+.image images/nsenter_stage_b.jpg _ 800
+
+Uses clone() to be able to specify NS sharing flags (- and also setjmp!)
+
+* nsenter from 10k meters 3/4
+
+.image images/nsenter_stage_c.jpg _ 800
+
+Spawns a child and sets NS (et. al.)
+
+* nsenter from 10k meters 4/4
+
+.image images/nsenter_stage_d.jpg _ 800
+
+You need another child to actually enter the NS
+
+* The runc flow, aka plugging things together
+
+* Takeaways
+
+* Q? A!
+
+Questions?
+
+Slides & more @ https://github.com/mojaves/
