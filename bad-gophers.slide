@@ -67,7 +67,7 @@ all the major management engines (possibly _all_) under the hood use runC
 
 * meet runC (2/2) - TODO: redo image
 
-.image https://containerd.io/img/chart-a.png _ 720
+.image images/containerd_runc.jpg _ 800
 .caption the containerd architecture, https://containerd.io/
 
 * how runC works (aka the heavy lifting)
@@ -249,30 +249,54 @@ Let's have a look to the flow - from 10k meters, only the *major* steps
 * nsenter from 10k meters 1/4
 
 .image images/nsenter_stage_a.jpg _ 800
-
-Do nothing if not asked to (reduce side effects as much as possible)
+.caption do nothing if not asked to (reduce side effects as much as possible)
 
 * nsenter from 10k meters 2/4
 
 .image images/nsenter_stage_b.jpg _ 800
-
-Uses clone() to be able to specify NS sharing flags (- and also setjmp!)
+.caption use clone() to be able to specify NS sharing flags (- and also setjmp!)
 
 * nsenter from 10k meters 3/4
 
 .image images/nsenter_stage_c.jpg _ 800
-
-Spawns a child and sets NS (et. al.)
+.caption spawns a child and sets NS (et. al.)
 
 * nsenter from 10k meters 4/4
 
 .image images/nsenter_stage_d.jpg _ 800
-
-You need another child to actually enter the NS
+.caption we need another child to actually enter the NS
 
 * The runc flow, aka plugging things together
 
-* Takeaways
+* wrap up
+
+Changing namespace(s) in go is surprisingly hard
+
+But isn't namespace a global property of our process?
+
+So is this another reminder that managing state is hard (and global state is harder?)
+
+*Especially* in concurrent programs
+
+* Takeaways - the specific lessons
+
+*Switching* *namespaces:*
+the `nsenter` package solves the issue for us
+works well, mature, well tested - probably no need to reimplement it
+
+*Running* *containers:*
+the `libcontainer` package and the `runc` tool do the plumbing well enough
+mature and well tested tools, but likely need some porcelain.
+
+* Takeaways - the general lessons
+
+.link https://golang.org/doc/effective_go.html#init we can leverage the init() function to run code before goroutines do
+
+`cgo` can save the day - we can always fall back to C
+Most often we can avoid that, but if it's the last chance, let's not forget we can do that
+
+`runc` packs it all in one executable, but we can partition our program in helpers
+it is the "unix way", each helper does one task and does it well.
 
 * Q? A!
 
