@@ -114,21 +114,44 @@ It boils down to changing namespaces. We can do that invoking a *sycall*
 .link https://groups.google.com/forum/#!topic/golang-nuts/ss1gEOcehjk/discussion turns out it is not.
 .link https://www.weave.works/blog/linux-namespaces-and-go-don-t-mix (as other people found out)
 
-* what's going on? (1/2)
+* what's going on? (1/3)
 
-TODO: do sequence diagram
+goroutines (G) are multiplexed by the go scheduler on OS threads (M)
+details: 
+.link https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit#heading=h.3ejixocv765a scheduler design document:
 
-* what's going on? (2/2)
+.image images/bug_samens.png _ 800
 
-- goroutines are multiplexed on OS threads
-- when a goroutine does a blocking syscall, the golang runtime might create a new OS thread before entering or exiting the syscall
-  TODO find code ref
-- the new OS thread 
+On linux, the implementation uses the `clone(2)` syscall.
+
+when a goroutine does a blocking syscall, the golang runtime might create a new OS thread before entering or exiting the syscall
+
+* parking headaches
+
+Syscalls/M[OS Thread] *Parking* and *Unparking*
+  
+  When an M [OS thread] creates a new G[oroutine], it must ensure that
+  there is another M [OS thread] to execute the G[oroutine]
+  (if not all M[OS Threads]’s are already busy).
+  Similarly, when an M [OS thread] enters syscall, it must ensure that
+  there is another M[OS Thread] to execute Go code.
+
+* what's going on? (2/3)
+
+goroutines transparently created by the go scheduler
 .link https://github.com/golang/go/blob/release-branch.go1.11/src/runtime/os_linux.go#L132 will have the same namespace as parent
-- the goroutine may end up running in a different namespace than expected
-- ...and we can't do anything about that :(
 
-* but what about LockOSThread
+.image images/bug_expected.png _ 800
+
+* what's going on? (4/3)
+
+So, if the runtime decided to spawn a new thread when your code was inside the "guest" namespace, the new thread will stay there forever
+
+.image images/bug_actual.png _ 800
+
+And your goroutine can randomly run in an unexpected namespace.
+
+* but what about LockOSThread?
 
   func runInsideNS() {
     runtime.LockOSThread()
@@ -139,32 +162,17 @@ TODO: do sequence diagram
   }
 
 
-1. `runInside)NS` will indeed run always on the same goroutine
+1. `runInsideNS` will indeed run always on the same goroutine
 2. `runInsideNS` restores correctly the namespace
 3. *however*, while `runInsideNS` runs, the go scheduler _may_ _create_ _a_ _new_ _OS_ _Thread_!
 4. and that thread _will_ _inherit_ _the_ _NS_ _on_ _which_ `runInsideNS` _currently_ _runs_!
 
-wrap up: future goroutine may run in a random namespace. *At* *random* *times!*
-
-
-* stumbling on the scheduler
-
-The existing behaviour is acknowledged in the
-.link https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit#heading=h.3ejixocv765a scheduler design document:
-
-Syscalls/M[OS Thread] *Parking* and *Unparking*
-  
-  When an M [OS thread] creates a new G[oroutine], it must ensure that
-  there is another M [OS thread] to execute the G[oroutine]
-  (if not all M[OS Threads]’s are already busy).
-  Similarly, when an M [OS thread] enters syscall, it must ensure that
-  there is another M[OS Thread] to execute Go code.
 
 * a known issue
 
 TODO: add links
 
-* it gets darker
+* more dark corners
 
 maybe obvious for anyone but worth remembering:
 
