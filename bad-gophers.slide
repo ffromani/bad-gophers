@@ -31,14 +31,11 @@ http://github.com/{mojaves,fromanirh}
 
 * Dramatis Personae
 
-A *container*:
-- runs on Linux
-- is a Linux process (like bash, firefox, thunderbird...) but
-- augmented with a set of the features of the linux kernel
-- to (re)create a controlled process
-- to run a well-known image
+A *container* is a *Linux* *process* (like bash, firefox, thunderbird...) but
+*augmented* with a set of the features of the linux kernel to (re)create a *contained* (!) *process* running a *well-known* *image*.
 
-TODO: immagine container
+.image https://upload.wikimedia.org/wikipedia/commons/0/06/Containercrane.jpg _ 500
+.caption container crane, container kraan in actie, illustratie is zelf gemaakt, Peter Welleman, CC-BY-SA-3.0, from Wikimedia Commons
 
 * Container Engines
 
@@ -65,10 +62,10 @@ all the major management engines (possibly _all_) under the hood use runC
 - cri-o
 - containerd
 
-* meet runC (2/2) - TODO: redo image
+* meet runC (2/2)
 
-.image images/containerd_runc.jpg _ 800
-.caption the containerd architecture, https://containerd.io/
+.image images/runc_containerd.png _ 1000
+.caption the (simplified) containerd architecture
 
 * how runC works (aka the heavy lifting)
 
@@ -256,22 +253,22 @@ Let's have a look to the flow - from 10k meters, only the *major* steps
 
 * nsenter from 10k meters 1/4
 
-.image images/nsenter_stage_a.jpg _ 800
+.image images/nsenter_stage_a.png 480 _
 .caption do nothing if not asked to (reduce side effects as much as possible)
 
 * nsenter from 10k meters 2/4
 
-.image images/nsenter_stage_b.jpg _ 800
+.image images/nsenter_stage_b.png 480 _
 .caption use clone() to be able to specify NS sharing flags (- and also setjmp!)
 
 * nsenter from 10k meters 3/4
 
-.image images/nsenter_stage_c.jpg _ 800
+.image images/nsenter_stage_c.png _ 800
 .caption spawns a child and sets NS (et. al.)
 
 * nsenter from 10k meters 4/4
 
-.image images/nsenter_stage_d.jpg _ 800
+.image images/nsenter_stage_d.png _ 720
 .caption we need another child to actually enter the NS
 
 * The runc flow, aka plugging things together
