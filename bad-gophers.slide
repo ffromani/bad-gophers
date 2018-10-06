@@ -1,5 +1,5 @@
 Bad Gophers: unexpected hurdles programming in Go
-Hey, can't be harder than C, right?
+Sometimes, you have to fight against your own runtime
 23 Oct 2018
 Tags: containers,golang,goroutines,programming
 
@@ -20,7 +20,7 @@ http://github.com/{mojaves,fromanirh}
 
 - part 2: ... leading to unexpected hurdles ...
 
-- part 3: ... and culminating in some clever solutions
+- part 3: ... and how we can overcome them
 
 .link https://github.com/mojaves/ slides and more: github.com/mojaves
 
@@ -92,9 +92,10 @@ Any container management tool need to move processes into another namespace. Or 
 
 It boils down to changing namespaces. We can do that invoking a *sycall*
 
-  
-  setns(2): make the calling process join existing namespace(s)
-  
+  setns - reassociate thread with a namespace
+
+*Important*: namespace is a *thread* property
+
 
 * it seems easy
 
@@ -114,7 +115,7 @@ It boils down to changing namespaces. We can do that invoking a *sycall*
 * what's going on? (1/3)
 
 goroutines (G) are multiplexed by the go scheduler on OS threads (M)
-details: 
+details:
 .link https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit#heading=h.3ejixocv765a scheduler design document:
 
 .image images/bug_samens.png _ 800
@@ -126,7 +127,7 @@ when a goroutine does a blocking syscall, the golang runtime might create a new 
 * parking headaches
 
 Syscalls/M[OS Thread] *Parking* and *Unparking*
-  
+
   When an M [OS thread] creates a new G[oroutine], it must ensure that
   there is another M [OS thread] to execute the G[oroutine]
   (if not all M[OS Threads]’s are already busy).
@@ -140,7 +141,7 @@ goroutines transparently created by the go scheduler
 
 .image images/bug_expected.png _ 800
 
-* what's going on? (4/3)
+* what's going on? (3/3)
 
 So, if the runtime decided to spawn a new thread when your code was inside the "guest" namespace, the new thread will stay there forever
 
@@ -165,10 +166,6 @@ And your goroutine can randomly run in an unexpected namespace.
 4. and that thread _will_ _inherit_ _the_ _NS_ _on_ _which_ `runInsideNS` _currently_ _runs_!
 
 
-* a known issue
-
-TODO: add links
-
 * more dark corners
 
 maybe obvious for anyone but worth remembering:
@@ -190,7 +187,34 @@ maybe just use systemd? :)
 .image https://upload.wikimedia.org/wikipedia/commons/c/cc/Spork_Plus.jpg _ 800
 .caption plastic spork (plus) By CarbonNYC, CC BY 2.0, via Wikimedia Commons
 
-* a step back
+* The "ugly", quick fix
+
+Let's just spawn a helper process!
+
+- it's effective!
+- our binary is no longer self contained - sometimes a big deal, sometimes not
+- spawning a helper is costly
+- the helper will face the very same challenges - maybe use another language for the helper, say C? :)
+- this is actually what few projects did
+
+* I can't or wan't use helpers!
+
+(Actually *NOT* "bad" at all, just complex but very clever)
+
+How does libcontainer solve the namespace issue?
+.link https://github.com/opencontainers/runc/tree/master/libcontainer/nsenter enter the nsenter package
+
+Implemented in plain old C :)
+(except the tests)
+
+.link https://github.com/opencontainers/runc/blob/master/libcontainer/nsenter/README.md Excerpt from the README:
+
+  The nsenter package registers a special init constructor that is called before the Go
+  runtime has a chance to boot.
+
+Worth a closer look!
+
+* a step back: what's this libcontainer thing?
 
 We discovered `runc` is the core component of every major (possibly all) container runtime
 
@@ -204,50 +228,25 @@ So, let's look inside libcontainer
 * jumping through hoops
 
 .link https://github.com/opencontainers/runc/blob/master/libcontainer/README.md From the README of libcontainer:
-  
+
   Using libcontainer
 
   Because containers are spawned in a two step process you will need a binary
   that will be executed as the init process for the container.
   In libcontainer, we use the current binary (/proc/self/exe) to be executed
   as the init process[...]
-  
+
 
 We may found a good reason why everyone is (re)using runc :)
 
-* jumping through MORE hoops, in fire
+* The nsenter flow
 
-How does libcontainer solve the namespace issue?
-.link https://github.com/opencontainers/runc/tree/master/libcontainer/nsenter enter the nsenter package
-
-Implemented in plain old C :)
-(except the tests)
-
-.link https://github.com/opencontainers/runc/blob/master/libcontainer/nsenter/README.md Excerpt from the README:
-  
-  The nsenter package registers a special init constructor that is called before the Go
-  runtime has a chance to boot.
-  
-
-Worth a closer look!
-
-* The nsenter flow, aka our solution
-
-The key trick is
 - hook up at the package import time, before goroutines get to run
 - use a C helper to do all the real namespace switching dance
 - The C helper has to fork() twice to enter the PID namespace correctly
-- The C helper needs to interact with the calling parent process, do its work and then let the Go runtime takeover
-- The C helper receives its configuration settings (e.g. namespaces to join!) through netlink-encoded data sent
-  via a pipe
-- The C helper sends back the PID of the new process using the same pipe, encoded as JSON
-
-* Seems easy, right?
-
-Highlights
-The C helper takes care of proper synchronization among temporary processes
-Synchronization is a multi-stage process (you need to set up stuff partially in child and partially in parent -e.g. maps)
-State machine to run code in the proper unix process
+- The C helper takes care of proper synchronization among temporary processes
+- Synchronization is a multi-stage process (you need to set up stuff partially in child and partially in parent -e.g. maps)
+- State machine to run code in the proper unix process
 
 Let's have a look to the flow - from 10k meters, only the *major* steps
 
@@ -271,13 +270,63 @@ Let's have a look to the flow - from 10k meters, only the *major* steps
 .image images/nsenter_stage_d.png _ 720
 .caption we need another child to actually enter the NS
 
-* The runc flow, aka plugging things together
+* nsenter - takeaways
+
+The `nsenter` package is actually a very interesting and solid package, built on many clever solutions
+
+It is "bad" *ONLY* in the sense its implementation is complex, and requires a lot of help from the surrounding program
+to be used effectively.
+
+Actually, `runc` is built around `nsenter`
+
+TL;DR: not drop-in solution
+
+* The good solution: just use go >= 1.10
+
+Three fixes merged in go 1.10
+
+- #20676: No new thread will be created from a thread which is currently locked with runtime.LockOSThread.
+- #20395: A locked thread will not be re-used to schedule other goroutines if a goroutine did not unlock it before exiting.
+- #20458: If a thread was locked multiple times, runtime.UnlockOSThread has to be called equal number of times in order to unlock the thread.
+
+Problem solved:
+
+  // +build go1.10
+
+
+* ... Problem really solved?
+
+
+  func runInsideNS() {
+    runtime.LockOSThread()
+    defer runtime.UnlockOSThread()
+
+    netns.Set(containerNs)
+    defer netns.Set(hostNs)
+
+    go doOtherStuff()  // on which NS am I?
+
+    doStuff()
+  }
+
+
+* Problem solved - if you are careful
+
+Caution!
+- the namespace is a *thread* property
+- the go scheduler can run gorutines on any available thread
+
+So:
+- do not spawn goroutine in the scenario above
+- you need to make sure that no packages you use spawn goroutines!
+
+Maybe these two points can be checked by some automated tools in the future?
 
 * wrap up
 
 Changing namespace(s) in go is surprisingly hard
 
-But isn't namespace a global property of our process?
+But isn't namespace a global property (of a thread, but still)?
 
 So is this another reminder that managing state is hard (and global state is harder?)
 
@@ -285,23 +334,7 @@ So is this another reminder that managing state is hard (and global state is har
 
 * Takeaways - the specific lessons
 
-*Switching* *namespaces:*
-the `nsenter` package solves the issue for us
-works well, mature, well tested - probably no need to reimplement it
-
-*Running* *containers:*
-the `libcontainer` package and the `runc` tool do the plumbing well enough
-mature and well tested tools, but likely need some porcelain.
-
-* Takeaways - the general lessons
-
-.link https://golang.org/doc/effective_go.html#init we can leverage the init() function to run code before goroutines do
-
-`cgo` can save the day - we can always fall back to C
-Most often we can avoid that, but if it's the last chance, let's not forget we can do that
-
-`runc` packs it all in one executable, but we can partition our program in helpers
-it is the "unix way", each helper does one task and does it well.
+TODO
 
 * Q? A!
 
