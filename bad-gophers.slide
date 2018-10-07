@@ -53,7 +53,7 @@ And what about *Kubernetes*?
 
 * meet runC (1/2)
 
-.link https://blog.docker.com/2015/06/runc/ runc spawned from the docker codebase around 2015
+.link https://blog.docker.com/2015/06/runC/ runC spawned from the docker codebase around 2015
 runC is the de facto standard to run containers
 runC cli interface treated as ABI
 all the major management engines (possibly _all_) under the hood use runC
@@ -64,7 +64,7 @@ all the major management engines (possibly _all_) under the hood use runC
 
 * meet runC (2/2)
 
-.image images/runc_containerd.png _ 1000
+.image images/runC_containerd.png _ 1000
 .caption the (simplified) containerd architecture
 
 * how runC works (aka the heavy lifting)
@@ -84,6 +84,25 @@ And therein, as the Bard would tell us, lies the rub.
 
 .image https://upload.wikimedia.org/wikipedia/commons/a/a5/Hurdle_on_athletic_track.jpg _ 600
 .caption Hurdle on athletic track by Santeri Viinamäki, CC BY-SA 4.0, from Wikimedia Commons
+
+* namespaces?
+
+  
+  A namespace wraps a global system resource in an abstraction that
+  makes it appear to the processes within the namespace that they have
+  their own isolated instance of the global resource.
+  
+  Changes to the global resource are visible to other processes
+  that are members of the namespace, but are invisible to other
+  processes.
+
+  
+.link http://man7.org/linux/man-pages/man7/namespaces.7.html man (7) namespaces
+
+* namespaces? (2)
+
+.image images/nested.png _ 800
+.caption namespaces in action - a possible configuration
 
 * setns
 
@@ -110,7 +129,18 @@ It boils down to changing namespaces. We can do that invoking a *sycall*
   }
 
 .link https://groups.google.com/forum/#!topic/golang-nuts/ss1gEOcehjk/discussion turns out it is not.
-.link https://www.weave.works/blog/linux-namespaces-and-go-don-t-mix (as other people found out)
+.link https://www.weave.works/blog/linux-namespaces-and-go-don-t-mix as other people found out
+.link https://www.weave.works/blog/linux-namespaces-golang-followup (SPOILER) unless you use go >= 1.10...
+
+* parking headaches
+
+Syscalls/M[OS Thread] *Parking* and *Unparking*
+
+  When an M [OS thread] creates a new G[oroutine], it must ensure that
+  there is another M [OS thread] to execute the G[oroutine]
+  (if not all M[OS Threads]’s are already busy).
+  Similarly, when an M [OS thread] enters syscall, it must ensure that
+  there is another M[OS Thread] to execute Go code.
 
 * what's going on? (1/3)
 
@@ -123,16 +153,6 @@ details:
 On linux, the implementation uses the `clone(2)` syscall.
 
 when a goroutine does a blocking syscall, the golang runtime might create a new OS thread before entering or exiting the syscall
-
-* parking headaches
-
-Syscalls/M[OS Thread] *Parking* and *Unparking*
-
-  When an M [OS thread] creates a new G[oroutine], it must ensure that
-  there is another M [OS thread] to execute the G[oroutine]
-  (if not all M[OS Threads]’s are already busy).
-  Similarly, when an M [OS thread] enters syscall, it must ensure that
-  there is another M[OS Thread] to execute Go code.
 
 * what's going on? (2/3)
 
@@ -165,23 +185,6 @@ And your goroutine can randomly run in an unexpected namespace.
 3. *however*, while `runInsideNS` runs, the go scheduler _may_ _create_ _a_ _new_ _OS_ _Thread_!
 4. and that thread _will_ _inherit_ _the_ _NS_ _on_ _which_ `runInsideNS` _currently_ _runs_!
 
-
-* more dark corners
-
-maybe obvious for anyone but worth remembering:
-
-(almost) every go program is multithreaded - it's just how the runtime is implemented!
-
-it is pretty hard to fork a multithreaded program safely
-
-.link http://www.evanjones.ca/fork-is-dangerous.html not just in golang btw
-
-.link https://golang.org/pkg/syscall/#ForkExec this is why there isn't fork without exec in the standard library
-
-.link https://github.com/golang/go/issues/227 so you may need to rethink how you daemonize your go program
-
-maybe just use systemd? :)
-
 * Finding solution(s)
 
 .image https://upload.wikimedia.org/wikipedia/commons/c/cc/Spork_Plus.jpg _ 800
@@ -199,35 +202,32 @@ Let's just spawn a helper process!
 
 * I can't or wan't use helpers!
 
-(Actually *NOT* "bad" at all, just complex but very clever)
-
-How does libcontainer solve the namespace issue?
-.link https://github.com/opencontainers/runc/tree/master/libcontainer/nsenter enter the nsenter package
+How does runC solve the namespace issue?
+.link https://github.com/opencontainers/runC/tree/master/libcontainer/nsenter enter the nsenter package
 
 Implemented in plain old C :)
-(except the tests)
 
-.link https://github.com/opencontainers/runc/blob/master/libcontainer/nsenter/README.md Excerpt from the README:
+.link https://github.com/opencontainers/runC/blob/master/libcontainer/nsenter/README.md Excerpt from the README:
 
   The nsenter package registers a special init constructor that is called before the Go
   runtime has a chance to boot.
 
 Worth a closer look!
 
-* a step back: what's this libcontainer thing?
+* zooming inside runC
 
-We discovered `runc` is the core component of every major (possibly all) container runtime
+We have seen `runC` is the core component of every major (possibly all) container runtime
 
-.link https://github.com/opencontainers/runc/tree/master/libcontainer In turn libcontainer is the core component of runc
+.link https://github.com/opencontainers/runC/tree/master/libcontainer In turn libcontainer is the core component of runC
 
-libcontainer is pretty tied to runc
+libcontainer is pretty tied to runC
 This also is a project derived from the Docker sources (~2015)
 
 So, let's look inside libcontainer
 
 * jumping through hoops
 
-.link https://github.com/opencontainers/runc/blob/master/libcontainer/README.md From the README of libcontainer:
+.link https://github.com/opencontainers/runC/blob/master/libcontainer/README.md From the README of libcontainer:
 
   Using libcontainer
 
@@ -237,7 +237,7 @@ So, let's look inside libcontainer
   as the init process[...]
 
 
-We may found a good reason why everyone is (re)using runc :)
+We may found a good reason why everyone is (re)using runC :)
 
 * The nsenter flow
 
@@ -277,7 +277,7 @@ The `nsenter` package is actually a very interesting and solid package, built on
 It is "bad" *ONLY* in the sense its implementation is complex, and requires a lot of help from the surrounding program
 to be used effectively.
 
-Actually, `runc` is built around `nsenter`
+Actually, `runC` is built around `nsenter`
 
 TL;DR: not drop-in solution
 
