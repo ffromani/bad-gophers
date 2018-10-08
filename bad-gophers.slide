@@ -26,7 +26,7 @@ http://github.com/{mojaves,fromanirh}
 
 * Containers, containers...
 
-.image https://upload.wikimedia.org/wikipedia/commons/7/72/2017-08-28_HS-Reise_Container_an_Deck_der_HEINRICH_SCHEPERS_%282588%29.jpg _ 600
+.image images/2017-08-28_HS-Reise_Container_an_Deck_der_HEINRICH_SCHEPERS_%282588%29.jpg _ 600
 .caption Container an Deck der HEINRICH SCHEPERS by Eduard47, CC BY-SA 4.0, from Wikimedia Commons
 
 * Dramatis Personae
@@ -34,7 +34,7 @@ http://github.com/{mojaves,fromanirh}
 A *container* is a *Linux* *process* (like bash, firefox, thunderbird...) but
 *augmented* with a set of the features of the linux kernel to (re)create a *contained* (!) *process* running a *well-known* *image*.
 
-.image https://upload.wikimedia.org/wikipedia/commons/0/06/Containercrane.jpg _ 500
+.image images/Containercrane.jpg _ 500
 .caption container crane, container kraan in actie, illustratie is zelf gemaakt, Peter Welleman, CC-BY-SA-3.0, from Wikimedia Commons
 
 * Container Engines
@@ -82,7 +82,7 @@ And therein, as the Bard would tell us, lies the rub.
 
 * hurdles, when the less expected
 
-.image https://upload.wikimedia.org/wikipedia/commons/a/a5/Hurdle_on_athletic_track.jpg _ 600
+.image images/hurdle_on_athletic_track.jpg _ 600
 .caption Hurdle on athletic track by Santeri Viinamäki, CC BY-SA 4.0, from Wikimedia Commons
 
 * namespaces?
@@ -187,7 +187,7 @@ And your goroutine can randomly run in an unexpected namespace.
 
 * Finding solution(s)
 
-.image https://upload.wikimedia.org/wikipedia/commons/c/cc/Spork_Plus.jpg _ 800
+.image images/Spork_Plus.jpg _ 800
 .caption plastic spork (plus) By CarbonNYC, CC BY 2.0, via Wikimedia Commons
 
 * The "ugly", quick fix
