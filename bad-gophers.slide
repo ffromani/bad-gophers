@@ -64,7 +64,7 @@ all the major management engines (possibly _all_) under the hood use runC
 
 * meet runC (2/2)
 
-.image images/runC_containerd.png _ 1000
+.image images/runc_containerd.png _ 1000
 .caption the (simplified) containerd architecture
 
 * how runC works (aka the heavy lifting)
@@ -99,6 +99,11 @@ And therein, as the Bard would tell us, lies the rub.
   
 .link http://man7.org/linux/man-pages/man7/namespaces.7.html man (7) namespaces
 
+Tools (*syscalls*):
+- clone (2) - with the right flags, create a new namespace
+- setns (2) - join an existing namespace
+- unshare (2) - create a new namespace for the caller
+
 * namespaces? (2)
 
 .image images/nested.png _ 800
@@ -128,9 +133,9 @@ It boils down to changing namespaces. We can do that invoking a *sycall*
     doStuff()
   }
 
-.link https://groups.google.com/forum/#!topic/golang-nuts/ss1gEOcehjk/discussion turns out it is not.
+.link https://groups.google.com/forum/#!topic/golang-nuts/ss1gEOcehjk/discussion turns out it is not: there is a nasty surprise hidden
 .link https://www.weave.works/blog/linux-namespaces-and-go-don-t-mix as other people found out
-.link https://www.weave.works/blog/linux-namespaces-golang-followup (SPOILER) unless you use go >= 1.10...
+.link https://www.weave.works/blog/linux-namespaces-golang-followup (SPOILER) unless you use go >= 1.10
 
 * parking headaches
 
@@ -142,11 +147,13 @@ Syscalls/M[OS Thread] *Parking* and *Unparking*
   Similarly, when an M [OS thread] enters syscall, it must ensure that
   there is another M[OS Thread] to execute Go code.
 
+More details:
+.link https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit#heading=h.3ejixocv765a the GO scheduler design document
+.link https://golang.org/src/runtime/proc.go the code itself is heavily commented
+
 * what's going on? (1/3)
 
-goroutines (G) are multiplexed by the go scheduler on OS threads (M)
-details:
-.link https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit#heading=h.3ejixocv765a scheduler design document:
+(in a nutshell:) goroutines (G) are multiplexed by the go scheduler on OS threads (M)
 
 .image images/bug_samens.png _ 800
 
@@ -185,6 +192,8 @@ And your goroutine can randomly run in an unexpected namespace.
 3. *however*, while `runInsideNS` runs, the go scheduler _may_ _create_ _a_ _new_ _OS_ _Thread_!
 4. and that thread _will_ _inherit_ _the_ _NS_ _on_ _which_ `runInsideNS` _currently_ _runs_!
 
+TL;DR: namespace "leak" from the thread _implicitely_ created by runtime
+
 * Finding solution(s)
 
 .image images/Spork_Plus.jpg _ 800
@@ -212,7 +221,7 @@ Implemented in plain old C :)
   The nsenter package registers a special init constructor that is called before the Go
   runtime has a chance to boot.
 
-Worth a closer look!
+We can learn a few tricks here
 
 * zooming inside runC
 
@@ -241,7 +250,7 @@ We may found a good reason why everyone is (re)using runC :)
 
 * The nsenter flow
 
-- hook up at the package import time, before goroutines get to run
+- hook up at the package import time
 - use a C helper to do all the real namespace switching dance
 - The C helper has to fork() twice to enter the PID namespace correctly
 - The C helper takes care of proper synchronization among temporary processes
@@ -249,6 +258,15 @@ We may found a good reason why everyone is (re)using runC :)
 - State machine to run code in the proper unix process
 
 Let's have a look to the flow - from 10k meters, only the *major* steps
+
+: turns out this flow is designed to workaround a very ancient version of the go runtime
+: - https://github.com/opencontainers/runc/blob/master/libcontainer/nsenter/README.md
+: goroutines _used_ not to be allowed at init() time:
+: - https://groups.google.com/forum/?fromgroups#!topic/golang-dev/pBroPv1EXmU
+: - https://groups.google.com/forum/#!topic/golang-nuts/WkwbdXzgPnc
+: around golang v1, goroutines were not allowed
+: the current go spec "just" ensure sequential ordering
+: - https://golang.org/ref/spec#Package_initialization
 
 * nsenter from 10k meters 1/4
 
@@ -272,10 +290,12 @@ Let's have a look to the flow - from 10k meters, only the *major* steps
 
 * nsenter - takeaways
 
-The `nsenter` package is actually a very interesting and solid package, built on many clever solutions
+The `nsenter` package is actually a very interesting and solid package, built on many clever tricks
 
-It is "bad" *ONLY* in the sense its implementation is complex, and requires a lot of help from the surrounding program
-to be used effectively.
+The evolution of the go language made some of assumptions no longer relevant
+(but if it ain't broken...)
+
+The implementation is complex, and requires a lot of help from the surrounding program to be used effectively.
 
 Actually, `runC` is built around `nsenter`
 
