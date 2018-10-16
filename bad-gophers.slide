@@ -75,10 +75,9 @@ to run a container, you need to setup some key management/containement features 
 - SELinux (set up policy)
 - seccomp (ditto)
 - capabilities (drop privileges)
-- ...
 - *namespaces*
 
-And therein, as the Bard would tell us, lies the rub.
+And with namespaces things turn to be interesting.
 
 * hurdles, when the less expected
 
@@ -104,10 +103,20 @@ Tools (*syscalls*):
 - setns (2) - join an existing namespace
 - unshare (2) - create a new namespace for the caller
 
-* namespaces? (2)
+* namespace nesting
 
-.image images/nested.png _ 800
-.caption namespaces in action - a possible configuration
+global/default namespace by default - when system boot. Let's call this the "outer" namespace
+
+let's say we have other processes run in different namespaces. Let's call these "inner".
+
+And let's pretend we want to write code which wants to join those inner namespace to do some work
+
+In a long running program (daemon)
+
+* namespace nesting (2)
+
+.image images/pstree.png
+.caption simple(st) example of a nested namespace 
 
 * setns
 
@@ -137,9 +146,28 @@ It boils down to changing namespaces. We can do that invoking a *sycall*
 .link https://www.weave.works/blog/linux-namespaces-and-go-don-t-mix as other people found out
 .link https://www.weave.works/blog/linux-namespaces-golang-followup (SPOILER) unless you use go >= 1.10
 
-* parking headaches
 
-Syscalls/M[OS Thread] *Parking* and *Unparking*
+* go scheduler: the bare minimum concepts
+
+We have our code (functions)
+
+Which run in goroutines (*G*) - lightweight threads
+
+goroutines need a context (*P*) to run - needed by the work-stealing go scheduler
+
+goroutines are multiplexed on operathing system threads (*M*)
+
+Work stealing? - needs at least another talk :)
+
+* go scheduler: the bare minimum concepts - illustrated
+
+.image images/go_scheduler_concepts.png 480 _
+.caption the go scheduler concepts in practice - see more at https://morsmachine.dk/go-scheduler
+
+* zooming in the go scheduler
+
+The go scheduler may create new threads
+
 
   When an M [OS thread] creates a new G[oroutine], it must ensure that
   there is another M [OS thread] to execute the G[oroutine]
@@ -148,8 +176,11 @@ Syscalls/M[OS Thread] *Parking* and *Unparking*
   there is another M[OS Thread] to execute Go code.
 
 More details:
-.link https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit#heading=h.3ejixocv765a the GO scheduler design document
+.link https://golang.org/s/go11sched the GO scheduler design document
 .link https://golang.org/src/runtime/proc.go the code itself is heavily commented
+
+: potentially creating a new M when we enter a potentially blocking syscall is straightforward.
+: other cases are influenced by the go work-stealing scheduler design, see https://morsmachine.dk/go-scheduler
 
 * what's going on? (1/3)
 
@@ -199,15 +230,18 @@ TL;DR: namespace "leak" from the thread _implicitely_ created by runtime
 .image images/Spork_Plus.jpg _ 800
 .caption plastic spork (plus) By CarbonNYC, CC BY 2.0, via Wikimedia Commons
 
-* The "ugly", quick fix
+* The quick fix
 
 Let's just spawn a helper process!
 
-- it's effective!
+it's effective!
+
+Unfortunately:
 - our binary is no longer self contained - sometimes a big deal, sometimes not
 - spawning a helper is costly
 - the helper will face the very same challenges - maybe use another language for the helper, say C? :)
-- this is actually what few projects did
+
+This may or may not a be a issue for your project. But what if...
 
 * I can't or wan't use helpers!
 
@@ -244,6 +278,9 @@ So, let's look inside libcontainer
   that will be executed as the init process for the container.
   In libcontainer, we use the current binary (/proc/self/exe) to be executed
   as the init process[...]
+
+: OTOH, nsenter: """And package `nsenter` is only imported in `init.go`, so every time the runc
+: `init` command is invoked, that C code is run."""
 
 
 We may found a good reason why everyone is (re)using runC :)
@@ -288,18 +325,15 @@ Let's have a look to the flow - from 10k meters, only the *major* steps
 .image images/nsenter_stage_d.png _ 720
 .caption we need another child to actually enter the NS
 
-* nsenter - takeaways
+: code comment in nsexec.c:
+: /*
+:  * We fork again because of PID namespace, setns(2) or unshare(2) don't
+:  * change the PID namespace of the calling process, because doing so
+:  * would change the caller's idea of its own PID (as reported by getpid()),
+:  * which would break many applications and libraries, so we must fork
+:  * to actually enter the new PID namespace.
+:  */
 
-The `nsenter` package is actually a very interesting and solid package, built on many clever tricks
-
-The evolution of the go language made some of assumptions no longer relevant
-(but if it ain't broken...)
-
-The implementation is complex, and requires a lot of help from the surrounding program to be used effectively.
-
-Actually, `runC` is built around `nsenter`
-
-TL;DR: not drop-in solution
 
 * The good solution: just use go >= 1.10
 
@@ -314,7 +348,7 @@ Problem solved:
   // +build go1.10
 
 
-* ... Problem really solved?
+* Problem really solved?
 
 
   func runInsideNS() {
@@ -330,7 +364,7 @@ Problem solved:
   }
 
 
-* Problem solved - if you are careful
+* Problem indeed solved, if you are careful
 
 Caution!
 - the namespace is a *thread* property
@@ -344,17 +378,15 @@ Maybe these two points can be checked by some automated tools in the future?
 
 * wrap up
 
-Changing namespace(s) in go is surprisingly hard
+Switching namespace _still_ require care in go
 
-But isn't namespace a global property (of a thread, but still)?
+Go is maturing fast to be used as system language
 
-So is this another reminder that managing state is hard (and global state is harder?)
+Some of the complexity hidden in the existing package is being simplified away by the evolution
+of the go language.
 
-*Especially* in concurrent programs
-
-* Takeaways - the specific lessons
-
-TODO
+Still worth reading that code: the steps needed to do the work are still relevant (or the same!)
+Well-maintained battle-tested code has worthy lessons embedded
 
 * Q? A!
 
